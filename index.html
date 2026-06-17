@@ -126,13 +126,28 @@
             </div>
         </header>
 
-        <main id="chat-messages" class="flex-1 overflow-y-auto p-6 space-y-6 bg-[radial-gradient(#1e293b_1px,transparent_1px)] [background-size:24px_24px]"></main>
+        <main id="chat-messages" class="flex-1 overflow-y-auto p-6 space-y-6 bg-[radial-gradient(#1e293b_1px,transparent_1px)] [background-size:24px_24px]">
+            <div id="file-upload-loader" class="hidden sticky top-0 left-0 right-0 z-20 w-full bg-slate-900/90 backdrop-blur-sm border-b border-slate-800 pb-3 flex items-center justify-between px-2">
+                <div class="flex items-center space-x-3 min-w-0 flex-1">
+                    <div class="w-8 h-8 rounded-lg bg-indigo-600/10 text-indigo-400 flex items-center justify-center shrink-0">
+                        <i data-lucide="loader-2" class="w-4 h-4 animate-spin" id="loader-icon"></i>
+                    </div>
+                    <div class="min-w-0 flex-1 pr-4">
+                        <p class="text-xs font-semibold text-slate-300 truncate" id="loader-filename">Elaborazione file...</p>
+                        <div class="w-full bg-slate-800 h-1.5 rounded-full mt-1.5 overflow-hidden">
+                            <div id="loader-progress-bar" class="bg-indigo-500 h-full w-0 rounded-full transition-all duration-150"></div>
+                        </div>
+                    </div>
+                </div>
+                <span id="loader-percentage" class="text-[11px] font-mono font-bold text-indigo-400 shrink-0 bg-indigo-500/10 px-2 py-0.5 rounded-md border border-indigo-500/20">0%</span>
+            </div>
+        </main>
 
         <footer class="p-4 bg-slate-900 border-t border-slate-800">
             <form id="chat-form" class="max-w-5xl mx-auto flex items-center space-x-3 bg-slate-800/50 border border-slate-700/60 rounded-xl px-4 py-2 focus-within:ring-2 focus-within:ring-indigo-500/50 focus-within:border-indigo-500 transition-all">
                 <label class="text-slate-400 hover:text-indigo-400 transition-colors cursor-pointer p-1">
                     <i data-lucide="paperclip" class="w-5 h-5"></i>
-                    <input type="file" id="chat-attachment" class="hidden">
+                    <input type="file" id="chat-attachment" accept="image/*,audio/*,video/*,.pdf,.doc,.docx,.txt" class="hidden">
                 </label>
                 
                 <button type="button" id="record-audio-btn" class="text-slate-400 hover:text-red-400 transition-all p-1 flex items-center justify-center rounded-lg cursor-pointer" title="Registra nota vocale">
@@ -181,6 +196,12 @@
         const myAvatarContainer = document.getElementById('my-avatar-container');
         const editProfileBtn = document.getElementById('edit-profile-btn');
 
+        // Elementi della barra di avanzamento (Loader)
+        const fileUploadLoader = document.getElementById('file-upload-loader');
+        const loaderFilename = document.getElementById('loader-filename');
+        const loaderProgressBar = document.getElementById('loader-progress-bar');
+        const loaderPercentage = document.getElementById('loader-percentage');
+
         let currentUser = { username: "", avatarBase64: "" };
         let activeUsersMap = {}; 
         
@@ -207,7 +228,8 @@
             sendBtn.disabled = false;
             sendBtn.className = "bg-indigo-600 hover:bg-indigo-500 text-white p-2 rounded-lg transition-all duration-150 active:scale-95 flex items-center justify-center";
             
-            socket.emit('chat-message', `SYS_SYNC|${currentUser.username}|${currentUser.avatarBase64 || ''}`);
+            // Registra il profilo sul server
+            socket.emit('update-profile', { name: currentUser.username, avatar: currentUser.avatarBase64 });
         }
 
         setTimeout(checkSavedProfile, 100);
@@ -243,28 +265,72 @@
             setTimeout(() => loginModal.style.opacity = '1', 10);
         });
 
+        // Feedback della barra di avanzamento (Loader)
+        function showFileLoader(filename) {
+            loaderFilename.textContent = `Caricamento: ${filename}`;
+            loaderProgressBar.style.width = '0%';
+            loaderPercentage.textContent = '0%';
+            fileUploadLoader.classList.remove('hidden');
+        }
+
+        function updateFileLoaderProgress(percentage) {
+            loaderProgressBar.style.width = `${percentage}%`;
+            loaderPercentage.textContent = `${percentage}%`;
+        }
+
+        function hideFileLoader() {
+            fileUploadLoader.classList.add('hidden');
+        }
+
+        // Caricamento allegati con barra di avanzamento coerente
         attachmentInput.addEventListener('change', (e) => {
             const file = e.target.files[0];
             if (!file) return;
 
+            showFileLoader(file.name);
             const reader = new FileReader();
-            reader.onload = function(event) {
-                let type = 'file';
-                if (file.type.startsWith('image/')) type = 'image';
-                else if (file.type.startsWith('audio/')) type = 'audio';
 
-                const msgId = 'msg_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
-                const payload = `CHAT_ATTACHMENT|${currentUser.username}|${currentUser.avatarBase64 || ''}|${type}|${file.name}|${event.target.result}|${msgId}`;
-                socket.emit('chat-message', payload);
-                attachmentInput.value = ''; 
+            reader.onprogress = (event) => {
+                if (event.lengthComputable) {
+                    const percentage = Math.round((event.loaded / event.total) * 100);
+                    updateFileLoaderProgress(percentage);
+                }
             };
+
+            reader.onload = function(event) {
+                updateFileLoaderProgress(100);
+                
+                const msgObject = {
+                    id: 'msg_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
+                    text: ''
+                };
+
+                if (file.type.startsWith('image/')) msgObject.image = event.target.result;
+                else if (file.type.startsWith('audio/')) msgObject.audio = event.target.result;
+                else if (file.type.startsWith('video/')) msgObject.video = event.target.result;
+                else {
+                    msgObject.file = event.target.result;
+                    msgObject.fileName = file.name;
+                }
+
+                socket.emit('chat-message', msgObject);
+                attachmentInput.value = ''; 
+                setTimeout(hideFileLoader, 400);
+            };
+
+            reader.onerror = function() {
+                alert("Errore durante il caricamento.");
+                hideFileLoader();
+            };
+
             reader.readAsDataURL(file);
         });
 
+        // Registrazione Audio Vocale con Loader integrato
         recordAudioBtn.addEventListener('click', async () => {
             if (!isRecording) {
                 if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-                    alert("Il tuo browser non supporta la registrazione audio.");
+                    alert("Il browser non supporta la registrazione.");
                     return;
                 }
                 try {
@@ -275,12 +341,25 @@
                     mediaRecorder.ondataavailable = (event) => { audioChunks.push(event.data); };
 
                     mediaRecorder.onstop = () => {
+                        showFileLoader("Nota Vocale.mp3");
                         const audioBlob = new Blob(audioChunks, { type: 'audio/mp3' });
                         const reader = new FileReader();
+                        
+                        reader.onprogress = (event) => {
+                            if (event.lengthComputable) {
+                                const percentage = Math.round((event.loaded / event.total) * 100);
+                                updateFileLoaderProgress(percentage);
+                            }
+                        };
+
                         reader.onloadend = () => {
-                            const msgId = 'msg_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
-                            const payload = `CHAT_ATTACHMENT|${currentUser.username}|${currentUser.avatarBase64 || ''}|audio|Nota Vocale.mp3|${reader.result}|${msgId}`;
-                            socket.emit('chat-message', payload);
+                            updateFileLoaderProgress(100);
+                            socket.emit('chat-message', {
+                                id: 'msg_' + Date.now(),
+                                text: '',
+                                audio: reader.result
+                            });
+                            setTimeout(hideFileLoader, 400);
                         };
                         reader.readAsDataURL(audioBlob);
                         stream.getTracks().forEach(track => track.stop());
@@ -292,7 +371,7 @@
                     messageInput.placeholder = "Registrazione in corso... Clicca di nuovo per inviare.";
                     messageInput.disabled = true;
                 } catch (err) {
-                    alert("Impossibile accedere al microfono.");
+                    alert("Accesso al microfono negato.");
                 }
             } else {
                 mediaRecorder.stop();
@@ -325,65 +404,42 @@
         
         btnDeleteConfirm.addEventListener('click', () => {
             if (idMessaggioDaEliminare) {
-                socket.emit('chat-message', `CHAT_DELETE|${idMessaggioDaEliminare}`);
+                socket.emit('chat-message', { id: idMessaggioDaEliminare, text: 'CHAT_DELETE_ACTION' });
                 chiudiModaleElimina();
             }
         });
 
-        socket.on('update-users', (count) => {
-            userCountEl.textContent = count;
+        // Ricezione lista utenti: mappa atomica esatta (Risolve il bug di Render)
+        socket.on('update-users', (usersMap) => {
+            activeUsersMap = usersMap;
+            userCountEl.textContent = Object.keys(usersMap).length;
+            renderUsersSidebar();
         });
 
         socket.on('system-message', (text) => {
-            let userKey = "";
-            let action = "";
-
-            if (text.includes("è entrato")) {
-                userKey = text.split(" ")[0];
-                action = "è entrato nella chat.";
-            } else if (text.includes("ha abbandonato")) {
-                userKey = text.split(" ")[0];
-                action = "ha abbandonato la chat.";
-                delete activeUsersMap[userKey];
-                renderUsersSidebar();
-            }
-
-            if (action.includes("entrato") && currentUser.username) {
-                socket.emit('chat-message', `SYS_SYNC|${currentUser.username}|${currentUser.avatarBase64 || ''}`);
-            }
-
-            setTimeout(() => {
-                const realName = activeUsersMap[userKey] ? activeUsersMap[userKey].name : userKey;
-                const div = document.createElement('div');
-                div.className = "flex justify-center my-1";
-                div.innerHTML = `<span class="text-xs bg-slate-800/40 text-slate-500 px-3 py-1 rounded-md border border-slate-800">${realName} ${action}</span>`;
-                chatMessages.appendChild(div);
-                autoScroll();
-            }, 400);
+            const div = document.createElement('div');
+            div.className = "flex justify-center my-1 animate-fade-in";
+            div.innerHTML = `<span class="text-xs bg-slate-800/40 text-slate-500 px-3 py-1 rounded-md border border-slate-800">${text}</span>`;
+            chatMessages.appendChild(div);
+            autoScroll();
         });
 
         chatForm.addEventListener('submit', (e) => {
             e.preventDefault();
             if (messageInput.value.trim() === '') return;
 
-            const msgId = 'msg_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
-            const securePayload = `CHAT_MSG_V2|${currentUser.username}|${currentUser.avatarBase64 || ''}|${messageInput.value}|${msgId}`;
-            
-            socket.emit('chat-message', securePayload);
+            socket.emit('chat-message', {
+                id: 'msg_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
+                text: messageInput.value
+            });
             messageInput.value = '';
         });
 
+        // Rendering pulito dei messaggi senza stringhe strane
         socket.on('chat-message', (data) => {
-            let senderName = data.username;
-            let senderAvatar = "";
-            let messageContent = data.text;
-            let isAttachment = false;
-            let attachType = "", attachName = "", attachData = "";
-            let msgId = "";
-
-            if (typeof data.text === 'string' && data.text.startsWith('CHAT_DELETE|')) {
-                const idDaEliminare = data.text.split('|')[1];
-                const elementoMessaggio = document.getElementById(idDaEliminare);
+            // Se si tratta di un comando di eliminazione messaggio
+            if (data.text === 'CHAT_DELETE_ACTION') {
+                const elementoMessaggio = document.getElementById(data.id);
                 if (elementoMessaggio) {
                     elementoMessaggio.innerHTML = `
                         <div class="flex items-center space-x-2 text-xs text-slate-500 italic p-2 bg-slate-950/20 border border-slate-800/50 rounded-xl max-w-max">
@@ -395,82 +451,61 @@
                 return;
             }
 
-            if (typeof data.text === 'string' && data.text.startsWith('SYS_SYNC|')) {
-                const parti = data.text.split('|');
-                activeUsersMap[data.username] = { name: parti[1], avatar: parti[2] || "" };
-                renderUsersSidebar();
-                return;
-            }
-
-            if (typeof data.text === 'string' && data.text.startsWith('CHAT_ATTACHMENT|')) {
-                const parti = data.text.split('|');
-                senderName = parti[1];
-                senderAvatar = parti[2];
-                attachType = parti[3];
-                attachName = parti[4];
-                attachData = parti[5];
-                msgId = parti[6] || "";
-                isAttachment = true;
-                activeUsersMap[data.username] = { name: senderName, avatar: senderAvatar };
-                renderUsersSidebar();
-            }
-
-            if (typeof data.text === 'string' && data.text.startsWith('CHAT_MSG_V2|')) {
-                const parti = data.text.split('|');
-                senderName = parti[1];
-                senderAvatar = parti[2];
-                messageContent = parti[3];
-                msgId = parti[4] || "";
-                activeUsersMap[data.username] = { name: senderName, avatar: senderAvatar };
-                renderUsersSidebar();
-            }
-
-            const isMe = senderName === currentUser.username;
-            let finalBodyHTML = `<p class="text-sm text-slate-300 mt-1 break-words leading-relaxed">${escapeHTML(messageContent)}</p>`;
+            const isMe = data.username === currentUser.username;
+            let finalBodyHTML = `<p class="text-sm text-slate-300 mt-1 break-words leading-relaxed">${escapeHTML(data.text)}</p>`;
             
-            if (isAttachment) {
-                if (attachType === 'image') {
-                    finalBodyHTML = `<img src="${attachData}" alt="${attachName}" class="mt-2 max-w-xs max-h-60 rounded-lg object-cover border border-slate-700 cursor-zoom-in hover:brightness-90 transition-all" onclick="zoomImage('${attachData}')">`;
-                } else if (attachType === 'audio') {
-                    finalBodyHTML = `
-                        <div class="mt-2 bg-gradient-to-r from-slate-950 to-slate-900 border border-indigo-500/20 p-3 rounded-2xl max-w-sm flex flex-col gap-2 shadow-xl">
-                            <div class="flex items-center space-x-2 text-xs font-semibold tracking-wide text-indigo-400">
-                                <span class="flex h-2 w-2 rounded-full bg-indigo-500 animate-pulse"></span>
-                                <i data-lucide="mic" class="w-3.5 h-3.5"></i>
-                                <span>NOTA VOCALE</span>
-                            </div>
-                            <audio controls src="${attachData}" class="w-full h-8 filter drop-shadow-sm"></audio>
-                        </div>`;
-                } else {
-                    finalBodyHTML = `
-                        <a href="${attachData}" download="${attachName}" class="mt-2 inline-flex items-center space-x-3 bg-slate-800 hover:bg-slate-750 border border-slate-700/80 px-4 py-2.5 rounded-xl transition-all max-w-xs group/file">
-                            <i data-lucide="file-text" class="w-5 h-5 text-indigo-400 group-hover/file:scale-110 transition-transform"></i>
-                            <div class="min-w-0 flex-1">
-                                <p class="text-xs text-slate-200 font-medium truncate">${attachName}</p>
-                                <p class="text-[10px] text-emerald-400 flex items-center gap-0.5 mt-0.5"><i data-lucide="download" class="w-2.5 h-2.5"></i> Scarica file</p>
-                            </div>
-                        </a>`;
-                }
+            if (data.image) {
+                finalBodyHTML = `<img src="${data.image}" class="mt-2 max-w-xs max-h-60 rounded-lg object-cover border border-slate-700 cursor-zoom-in hover:brightness-90 transition-all" onclick="zoomImage('${data.image}')">`;
+            } else if (data.audio) {
+                finalBodyHTML = `
+                    <div class="mt-2 bg-gradient-to-r from-slate-950 to-slate-900 border border-indigo-500/20 p-3 rounded-2xl max-w-sm flex flex-col gap-2 shadow-xl">
+                        <div class="flex items-center space-x-2 text-xs font-semibold tracking-wide text-indigo-400">
+                            <span class="flex h-2 w-2 rounded-full bg-indigo-500 animate-pulse"></span>
+                            <i data-lucide="mic" class="w-3.5 h-3.5"></i>
+                            <span>NOTA VOCALE</span>
+                        </div>
+                        <audio controls src="${data.audio}" class="w-full h-8 filter drop-shadow-sm"></audio>
+                    </div>`;
+            } else if (data.video) {
+                // Anteprima e player video coerente al 100% con lo stile del sito
+                finalBodyHTML = `
+                    <div class="mt-2 bg-gradient-to-r from-slate-950 to-slate-900 border border-slate-800 p-2 rounded-2xl max-w-sm flex flex-col gap-2 shadow-xl">
+                        <div class="flex items-center space-x-2 text-xs font-semibold tracking-wide text-cyan-400">
+                            <span class="flex h-2 w-2 rounded-full bg-cyan-500 animate-pulse"></span>
+                            <i data-lucide="video" class="w-3.5 h-3.5"></i>
+                            <span class="truncate">Video Ricevuto</span>
+                        </div>
+                        <div class="rounded-xl overflow-hidden bg-black border border-slate-800">
+                            <video controls src="${data.video}" class="w-full h-auto max-h-52 object-contain" preload="metadata"></video>
+                        </div>
+                    </div>`;
+            } else if (data.file) {
+                finalBodyHTML = `
+                    <a href="${data.file}" download="${data.fileName}" class="mt-2 inline-flex items-center space-x-3 bg-slate-800 hover:bg-slate-750 border border-slate-700/80 px-4 py-2.5 rounded-xl transition-all max-w-xs group/file">
+                        <i data-lucide="file-text" class="w-5 h-5 text-indigo-400 group-hover/file:scale-110 transition-transform"></i>
+                        <div class="min-w-0 flex-1">
+                            <p class="text-xs text-slate-200 font-medium truncate">${data.fileName}</p>
+                            <p class="text-[10px] text-emerald-400 flex items-center gap-0.5 mt-0.5"><i data-lucide="download" class="w-2.5 h-2.5"></i> Scarica file</p>
+                        </div>
+                    </a>`;
             }
 
-            const deleteButtonHTML = (isMe && msgId) ? `
-                <button onclick="richiediEliminazione('${msgId}')" class="opacity-0 group-hover:opacity-100 p-1 rounded-md text-slate-500 hover:text-red-400 hover:bg-slate-800 transition-all cursor-pointer self-start" title="Elimina messaggio">
+            const deleteButtonHTML = isMe ? `
+                <button onclick="richiediEliminazione('${data.id}')" class="opacity-0 group-hover:opacity-100 p-1 rounded-md text-slate-500 hover:text-red-400 hover:bg-slate-800 transition-all cursor-pointer self-start" title="Elimina messaggio">
                     <i data-lucide="trash-2" class="w-4 h-4"></i>
                 </button>` : '';
 
-            // GENERAZIONE ORARIO SUL PC LOCALE DELL'UTENTE (Sincronizzato al fuso orario locale del computer corrente)
-            const oraLocalePc = new Date().toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
-
             const msgHTML = `
-                <div id="${msgId}" class="flex items-start justify-between group p-1 rounded-lg ${isMe ? 'bg-indigo-600/5' : 'hover:bg-slate-800/20'} transition-all">
+                <div id="${data.id}" class="flex items-start justify-between group p-1 rounded-lg ${isMe ? 'bg-indigo-600/5' : 'hover:bg-slate-800/20'} transition-all">
                     <div class="flex items-start space-x-3 min-w-0 flex-1">
-                        <div class="shrink-0 shadow-sm">${generateAvatarHTML(senderName, senderAvatar, isMe)}</div>
+                        <div class="shrink-0 shadow-sm">${generateAvatarHTML(data.username, data.avatar, isMe)}</div>
                         <div class="flex-1 min-w-0">
                             <div class="flex items-baseline space-x-2">
-                                <span class="text-sm font-semibold ${isMe ? 'text-indigo-400' : 'text-slate-200'}">${isMe ? 'Tu' : senderName}</span>
-                                <span class="text-[10px] text-slate-500">${oraLocalePc}</span>
+                                <span class="text-sm font-semibold ${isMe ? 'text-indigo-400' : 'text-slate-200'}">${isMe ? 'Tu' : data.username}</span>
+                                <span class="text-[10px] text-slate-500">${data.time}</span>
                             </div>
-                            ${finalBodyHTML}
+                            ${data.text ? `<p class="text-sm text-slate-300 mt-1 break-words leading-relaxed">${escapeHTML(data.text)}</p>` : ''}
+                            ${(data.image || data.audio || data.video || data.file) ? finalBodyHTML : ''}
                         </div>
                     </div>
                     ${deleteButtonHTML}
@@ -484,6 +519,7 @@
 
         function renderUsersSidebar() {
             usersListEl.innerHTML = "";
+            // Mostra sempre prima se stessi in cima alla lista
             usersListEl.insertAdjacentHTML('beforeend', `
                 <div class="flex items-center space-x-3 bg-slate-900/40 px-3 py-2 rounded-xl border border-slate-800">
                     ${generateAvatarHTML(currentUser.username, currentUser.avatarBase64, true)}
@@ -491,12 +527,14 @@
                 </div>
             `);
 
+            // Mostra gli altri utenti reali connessi escludendo duplicati
             for (const key in activeUsersMap) {
-                if (activeUsersMap[key].name !== currentUser.username) {
+                const u = activeUsersMap[key];
+                if (u.name && u.name !== currentUser.username && !u.name.startsWith('Utente_')) {
                     usersListEl.insertAdjacentHTML('beforeend', `
                         <div class="flex items-center space-x-3 px-3 py-2 rounded-xl hover:bg-slate-900/30 transition-all">
-                            ${generateAvatarHTML(activeUsersMap[key].name, activeUsersMap[key].avatar, false)}
-                            <span class="text-sm font-medium text-slate-300 truncate">${activeUsersMap[key].name}</span>
+                            ${generateAvatarHTML(u.name, u.avatar, false)}
+                            <span class="text-sm font-medium text-slate-300 truncate">${u.name}</span>
                         </div>
                     `);
                 }
